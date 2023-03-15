@@ -153,6 +153,23 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   DWORD MakePath(const std::wstring& path);
 
   /// <summary>
+  /// Writes a specified data to the file.
+  /// </summary>
+  /// <param name="operation">Diagnostics operation name. Generally,
+  /// "Caller->WriteFileW".</param> <param name="fileHandle">A valid file
+  /// handle.</param> <param name="buffer">A pointer to head of the buffer which
+  /// stores writing data.</param>
+  /// <param name="length">Length of the data in bytes. This is 32-bit.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns <c>false</c>, <c>result->Error</c> will be called.</param>
+  /// <returns><c>true</c> if success, <c>false</c> otherwise.</returns>
+  bool WriteFileHelper(
+      const WCHAR* operation, HANDLE fileHandle, LPCVOID buffer,
+      const DWORD length,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
+
+  /// <summary>
   /// Gets a new encryption key for current user.
   /// </summary>
   /// <param name="result"><see cref="std::unique_ptr"/>
@@ -351,6 +368,7 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result) {
   std::wstring companyName;
   std::wstring productName;
+  // TODO: support long path
   WCHAR nameBuffer[MAX_PATH + 1]{};
   char* infoBuffer;
   DWORD versionInfoSize;
@@ -420,33 +438,52 @@ std::wstring FlutterSecureStorageWindowsPlugin::SanitizeDirString(
 }
 
 DWORD FlutterSecureStorageWindowsPlugin::MakePath(const std::wstring& path) {
-  // TODO: Improve error handling
   while (1) {
-    int ret = _wmkdir(path.c_str());
-    if (ret == 0) {
+    if (0 != CreateDirectoryW(path.c_str(), NULL)) {
       return ERROR_SUCCESS;
     }
-    switch (errno) {
-      case ENOENT: {
+    auto error = GetLastError();
+    switch (error) {
+      case ERROR_PATH_NOT_FOUND: {
         size_t pos = path.find_last_of('/');
         if (pos == std::wstring::npos) pos = path.find_last_of('\\');
         if (pos == std::wstring::npos) return ERROR_PATH_NOT_FOUND;
         // Create parent
-        ret = MakePath(path.substr(0, pos));
-        if (ERROR_SUCCESS != ret) {
+        error = MakePath(path.substr(0, pos));
+        if (ERROR_SUCCESS != error) {
           return ERROR_PATH_NOT_FOUND;
         }
         // Retry
         continue;
       }
-      case EEXIST:
+      case ERROR_ALREADY_EXISTS:
         // We do not re-check here because path can be removed as long as we do
         // not hold handle.
         return ERROR_SUCCESS;
       default:
-        return static_cast<DWORD>(E_FAIL);
+        return error;
     }
   }
+}
+
+bool FlutterSecureStorageWindowsPlugin::WriteFileHelper(
+    const WCHAR* operation, HANDLE fileHandle, LPCVOID buffer,
+    const DWORD length,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result) {
+  DWORD bytesWritten;
+  if (!WriteFile(fileHandle, buffer, length, &bytesWritten, NULL)) {
+    HandleWin32Error(operation, GetLastError(), result);
+    return false;
+  }
+  if (length != bytesWritten) {
+    std::ostringstream message;
+    message << "Unexpected write error. Writing " << length
+            << " bytes, but only " << bytesWritten << " bytes were written.";
+    result->Error(message.str());
+    return false;
+  }
+
+  return true;
 }
 
 PBYTE FlutterSecureStorageWindowsPlugin::GetEncryptionKey(
@@ -574,8 +611,9 @@ void FlutterSecureStorageWindowsPlugin::Write(
   PBYTE ciphertext = NULL, iv = NULL, encryptionKey = NULL;
   BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo{};
   BCRYPT_AUTH_TAG_LENGTHS_STRUCT authTagLengths{};
-  std::basic_ofstream<BYTE> fs;
+  HANDLE fileHandle = INVALID_HANDLE_VALUE;
   std::wstring appSupportPath;
+  std::wstring fileName;
 
   heapHandle = GetProcessHeap();
   if (INVALID_HANDLE_VALUE == heapHandle) {
@@ -671,27 +709,60 @@ void FlutterSecureStorageWindowsPlugin::Write(
   if (!GetApplicationSupportPath(appSupportPath, result)) {
     goto cleanup;
   }
-  auto ret = MakePath(appSupportPath);
-  if (ERROR_SUCCESS != ret) {
-    HandleWin32Error(L"Write->MakePath(appSupportPath)", ret, result);
+
+  fileName = appSupportPath + L"\\" + std::wstring(key.begin(), key.end()) +
+             L".secure";
+  while (1) {
+    auto ret = MakePath(appSupportPath);
+    if (ERROR_SUCCESS != ret) {
+      HandleWin32Error(L"Write->MakePath(appSupportPath)", ret, result);
+      goto cleanup;
+    }
+
+    // TODO: sanitize
+    // Open file handle with CREATE_ALWAYS, which ensures file is truncated when
+    // it exists.
+    fileHandle = CreateFileW(fileName.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                             NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (INVALID_HANDLE_VALUE == fileHandle) {
+      auto error = GetLastError();
+      if (ERROR_PATH_NOT_FOUND == error) {
+        // Another process delete appSupportPath, so retry from MakePath call.
+        std::cerr << "Another process may delete appSupportPath, retrying."
+                  << std::endl;
+        continue;
+      }
+
+      HandleWin32Error(L"Write->CreateFileW", error, result);
+      goto cleanup;
+    } else {
+      // Succeeded to open.
+      break;
+    }
+  }
+
+  if (!WriteFileHelper(L"Write->WriteFile", fileHandle, iv, NONCE_SIZE,
+                       result)) {
     goto cleanup;
   }
-  // TODO: sanitize
-  // TODO: improve error handling
-  fs = std::basic_ofstream<BYTE>(appSupportPath + L"\\" +
-                                     std::wstring(key.begin(), key.end()) +
-                                     L".secure",
-                                 std::ios::binary | std::ios::trunc);
-  if (!fs) {
-    result->Error("Failed to open output stream");
+  if (!WriteFileHelper(L"Write->WriteFile", fileHandle, authInfo.pbTag,
+                       authInfo.cbTag, result)) {
     goto cleanup;
   }
-  fs.write(iv, NONCE_SIZE);
-  fs.write(authInfo.pbTag, authInfo.cbTag);
-  fs.write(ciphertext, ciphertextSize);
-  fs.close();
+  if (!WriteFileHelper(L"Write->WriteFile", fileHandle, ciphertext,
+                       ciphertextSize, result)) {
+    goto cleanup;
+  }
   result->Success();
+
 cleanup:
+  if (INVALID_HANDLE_VALUE != fileHandle) {
+    if (!CloseHandle(fileHandle)) {
+      std::cerr << "Failed to close file handle in Write, 0x" << std::hex
+                << std::setw(8) << std::setfill('0') << GetLastError()
+                << std::endl;
+    }
+  }
   if (iv && INVALID_HANDLE_VALUE != heapHandle) {
     if (!HeapFree(heapHandle, 0, iv)) {
       std::cerr << "Write->HeapFree(iv) failed, 0x" << std::hex << std::setw(8)
@@ -746,8 +817,10 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
         plaintext = NULL;
   DWORD plaintextSize = 0, bytesWritten = 0, ciphertextSize = 0;
   std::wstring appSupportPath;
-  std::basic_ifstream<BYTE> fs;
-  std::streampos fileSize;
+  std::wstring fileName;
+  HANDLE fileHandle = INVALID_HANDLE_VALUE;
+  FILE_STANDARD_INFO fileInfo = {};
+  size_t fileSize;
   std::optional<std::string> returnVal = std::nullopt;
 
   heapHandle = GetProcessHeap();
@@ -769,13 +842,25 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
     goto cleanup;
   }
   // TODO: sanitize
-  // TODO: improve error handling
+  fileName = appSupportPath + L"\\" + std::wstring(key.begin(), key.end()) +
+             L".secure";
   // Read full file into a buffer
-  fs = std::basic_ifstream<BYTE>(appSupportPath + L"\\" +
-                                     std::wstring(key.begin(), key.end()) +
-                                     L".secure",
-                                 std::ios::binary);
-  if (!fs.good()) {
+  fileHandle = CreateFileW(fileName.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (INVALID_HANDLE_VALUE == fileHandle) {
+    auto error = GetLastError();
+    switch (error) {
+      case ERROR_FILE_NOT_FOUND:
+      case ERROR_PATH_NOT_FOUND:
+        // File or directory does not exist, so let's go to backword
+        // compatibility mode.
+        break;
+      default:
+        // Unexpected error.
+        HandleWin32Error(L"Read->CreateFileW", error, result);
+        goto cleanup;
+    }
+
     // Backwards comp.
     PCREDENTIALW pcred;
     // Key will be converted to wchar internally.
@@ -793,18 +878,45 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
     }
     goto cleanup;
   }
-  fs.unsetf(std::ios::skipws);
-  fs.seekg(0, std::ios::end);
-  fileSize = fs.tellg();
-  fs.seekg(0, std::ios::beg);
+
+  if (!GetFileInformationByHandleEx(fileHandle, FileStandardInfo, &fileInfo,
+                                    sizeof(FILE_STANDARD_INFO))) {
+    HandleWin32Error(L"Read->GetFileInformationByHandleEx", GetLastError(),
+                     result);
+    goto cleanup;
+  }
+
+  // Flutter only supports 64bit platform, so we don't have to warry about
+  // overflow.
+  fileSize = fileInfo.EndOfFile.QuadPart;
 
   fileBuffer = (PBYTE)HeapAlloc(heapHandle, 0, fileSize);
   if (NULL == fileBuffer) {
     HandleWin32Error(L"Read->HeapAlloc(file)", GetLastError(), result);
     goto cleanup;
   }
-  fs.read(fileBuffer, fileSize);
-  fs.close();
+
+  auto remaining = fileSize;
+  auto currentBuffer = fileBuffer;
+  while (remaining > 0) {
+    DWORD byteReading = static_cast<DWORD>(min(remaining, 0x7FFFFFFF));
+    DWORD bytesRead;
+    if (!ReadFile(fileHandle, fileBuffer, byteReading, &bytesRead, NULL)) {
+      HandleWin32Error(L"Read->ReadFile", GetLastError(), result);
+      goto cleanup;
+    }
+
+    remaining -= bytesRead;
+    currentBuffer += bytesRead;
+  }
+
+  // Close file handle early.
+  if (!CloseHandle(fileHandle)) {
+    std::cerr << "Failed to close file handle in Read, 0x" << std::hex
+              << std::setw(8) << std::setfill('0') << GetLastError()
+              << std::endl;
+  }
+  fileHandle = INVALID_HANDLE_VALUE;
 
   status = BCryptOpenAlgorithmProvider(&algo, BCRYPT_AES_ALGORITHM, NULL, 0);
   if (!BCRYPT_SUCCESS(status)) {
@@ -834,8 +946,8 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
   }
   authInfo.cbNonce = NONCE_SIZE;
   // Check if file is at least long enough for iv and authentication tag
-  if (fileSize <=
-      static_cast<long long>(NONCE_SIZE) + authTagLengths.dwMaxLength) {
+  if (fileSize <= static_cast<unsigned long long>(NONCE_SIZE) +
+                      authTagLengths.dwMaxLength) {
     result->Error("File is too small.");
     goto cleanup;
   }
@@ -888,7 +1000,15 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
     goto cleanup;
   }
   returnVal = (char*)plaintext;
+
 cleanup:
+  if (INVALID_HANDLE_VALUE != fileHandle) {
+    if (!CloseHandle(fileHandle)) {
+      std::cerr << "Failed to close file handle in Read, 0x" << std::hex
+                << std::setw(8) << std::setfill('0') << GetLastError()
+                << std::endl;
+    }
+  }
   if (encryptionKey && INVALID_HANDLE_VALUE != heapHandle) {
     HeapFree(heapHandle, 0, encryptionKey);
   }
