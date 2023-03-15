@@ -72,8 +72,7 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   /// derived key for a value <paramref name="args" /> contains an entry with
   /// <paramref name="param"/>; otherwise, <see cref="std::nullopt" />.
   /// </returns>
-  std::optional<std::string> FlutterSecureStorageWindowsPlugin::GetValueKey(
-      const flutter::EncodableMap* args);
+  std::optional<std::string> GetValueKey(const flutter::EncodableMap* args);
 
   /// <summary>
   /// <para>Removes prefix of the given storage key.</para>
@@ -95,7 +94,7 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   /// <param name="result"><see cref="std::unique_ptr"/>
   /// of <see cref="flutter::MethodResult" /> to store method invocation
   /// result.</param>
-  void FlutterSecureStorageWindowsPlugin::HandleWin32Error(
+  void HandleWin32Error(
       const WCHAR* operation, const DWORD error,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
@@ -109,7 +108,7 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   /// <param name="result"><see cref="std::unique_ptr"/>
   /// of <see cref="flutter::MethodResult" /> to store method invocation
   /// result.</param>
-  void FlutterSecureStorageWindowsPlugin::HandleNTStatus(
+  void HandleNTStatus(
       const WCHAR* operation, const NTSTATUS error,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
@@ -120,8 +119,7 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   /// <param name="utf16">A<see cref="std::wstring" />.</param>
   /// <returns>A <see cref="std::string" /> which contains UTF-8 encoded
   /// string.</returns>
-  std::string FlutterSecureStorageWindowsPlugin::ConvertToUtf8(
-      std::wstring utf16);
+  std::string ConvertToUtf8(std::wstring utf16);
 
   /// <summary>
   /// Gets an appliction support path to store encrypted data.
