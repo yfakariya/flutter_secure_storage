@@ -17,6 +17,7 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
+#include <bitset>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -85,6 +86,17 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   std::string RemoveKeyPrefix(const std::string& key);
 
   /// <summary>
+  /// Gets a file path from specified key.
+  /// </summary>
+  /// <param name="key">An original stored key with prefix.</param>
+  /// <param name="appSupportPath">Path to app support directory which was
+  /// returned from <see cref="GetApplicationSupportPath" />.</param>
+  /// <returns>A file path. <c>null_opt</c> can be returned when the key is too
+  /// long.</returns>
+  std::optional<std::wstring> GetFilePathFromKey(
+      const std::wstring& appSupportPath, const std::string& key);
+
+  /// <summary>
   /// Handles Win32 error. When this method completes, <c>result->Error</c> is
   /// called.
   /// </summary>
@@ -136,6 +148,16 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   bool GetApplicationSupportPath(
       std::wstring& path,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
+
+  /// <summary>
+  /// Escapes file name with key.
+  /// </summary>
+  /// <param name="key">An original key string (UTF-8).</param>
+  /// <param name="maxChars">Max charactor length, in chars.</param>
+  /// <returns>A sanitized path. If key is too long, returns
+  /// <c>null_opt</c>.</returns>
+  std::optional<std::wstring> EscapeFileName(std::string key,
+                                             const size_t maxChars);
 
   /// <summary>
   /// Sanitizes directory path.
@@ -311,6 +333,24 @@ std::string FlutterSecureStorageWindowsPlugin::RemoveKeyPrefix(
   return key.substr(ELEMENT_PREFERENCES_KEY_PREFIX_LENGTH);
 }
 
+std::optional<std::wstring>
+FlutterSecureStorageWindowsPlugin::GetFilePathFromKey(
+    const std::wstring& appSupportPath, const std::string& key) {
+  // TODO: long path support
+  // In NTFS, every components must be less than or equal to 255 chars even if
+  // long path mode is used.
+  // So, we also check the resultLength is less than (255 - ".secure".length())
+  // here.
+  auto maxFileName = max(min(MAX_PATH - appSupportPath.length(), 255), 7) - 7;
+  auto fileName = EscapeFileName(key, maxFileName);
+  if (!fileName.has_value()) {
+    return std::optional<std::wstring>();
+  }
+
+  return std::make_optional(appSupportPath + L"\\" + fileName.value() +
+                            L".secure");
+}
+
 std::optional<std::string> FlutterSecureStorageWindowsPlugin::GetStringArg(
     const std::string& param, const flutter::EncodableMap* args) {
   auto p = args->find(param);
@@ -366,6 +406,7 @@ std::string FlutterSecureStorageWindowsPlugin::ConvertToUtf8(
 bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
     std::wstring& path,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result) {
+  // TODO: Alternative from option
   std::wstring companyName;
   std::wstring productName;
   // TODO: support long path
@@ -408,11 +449,13 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
       if (0 != VerQueryValueW(infoBuffer,
                               TEXT("\\StringFileInfo\\040904e4\\CompanyName"),
                               &queryVal, &queryLen)) {
+        // TODO: empty or null queryVal
         companyName = SanitizeDirString(std::wstring((const WCHAR*)queryVal));
       }
       if (0 != VerQueryValueW(infoBuffer,
                               TEXT("\\StringFileInfo\\040904e4\\ProductName"),
                               &queryVal, &queryLen)) {
+        // TODO: empty or null queryVal
         productName = SanitizeDirString(std::wstring((const WCHAR*)queryVal));
       }
     }
@@ -427,8 +470,73 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
   return true;
 }
 
+std::optional<std::wstring> FlutterSecureStorageWindowsPlugin::EscapeFileName(
+    std::string utf8String, const size_t maxChars) {
+  // * We use Base32 encoding here because we must distinguish keys which are
+  //   only differ their casing.
+  // * We takes string (UTF-8) rather than wstring (UTF-16) because most keys
+  //   only contain ASCII chars, so final file name length should be lessor than
+  //   UTF-16 based encoding.
+
+  const wchar_t* base32Chars = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+  if (utf8String.length() == 0) {
+    return std::make_optional(L"");
+  }
+
+  size_t resultLength =
+      static_cast<size_t>(ceil(utf8String.length() * 8 / 5.0));
+
+  if (resultLength > maxChars || resultLength > 248) {
+    return std::optional<std::wstring>();
+  }
+
+  std::bitset<sizeof(char) * 2> buffer;
+  std::wstring result;
+  result.reserve(resultLength);
+
+  size_t position = 0;
+  int32_t remainingBits = 0;
+  while (position < utf8String.length() || remainingBits > 0) {
+    if (remainingBits < 5) {
+      if (position < utf8String.length()) {
+        // Fill next char
+        buffer <<= sizeof(char);
+        buffer |= utf8String[position];
+        position++;
+        remainingBits += sizeof(char);
+      } else {
+        // Fill zero padding to be 5bits
+        auto zeroPadding = 5 - remainingBits;
+        buffer <<= zeroPadding;
+        remainingBits += zeroPadding;
+      }
+    }
+
+    result.push_back(base32Chars[(buffer >> (remainingBits - 5)).to_ulong()]);
+    remainingBits -= 5;
+  }
+
+  auto extraLength = result.length() % 8;
+  if (extraLength > 0) {
+    // Padding with '='
+    result.append(8 - extraLength, L'=');
+  }
+
+  return std::make_optional(result);
+}
+
 std::wstring FlutterSecureStorageWindowsPlugin::SanitizeDirString(
     std::wstring string) {
+  // We keep replacing to '_' even if it might cause name confliction because:
+  // * Name confliction still occurs when we use SanitizeFileString and do
+  //   backward compatible reading because backward compatible reading could
+  //   read another app's data which has same escaped company and product names.
+  // * It is extremely rare to conflict both of escaped company and product
+  //   names.
+  // * Naturally, non-escaped company and product names can conflict because no
+  //   one can prohibit it.
+  // So, it is too much thoughts.
   std::wstring sanitizedString =
       std::regex_replace(string, std::wregex(L"[<>:\"/\\\\|?*]"), L"_");
   rtrim(sanitizedString);
@@ -613,6 +721,7 @@ void FlutterSecureStorageWindowsPlugin::Write(
   BCRYPT_AUTH_TAG_LENGTHS_STRUCT authTagLengths{};
   HANDLE fileHandle = INVALID_HANDLE_VALUE;
   std::wstring appSupportPath;
+  std::optional<std::wstring> mayBeFileName;
   std::wstring fileName;
 
   heapHandle = GetProcessHeap();
@@ -710,8 +819,13 @@ void FlutterSecureStorageWindowsPlugin::Write(
     goto cleanup;
   }
 
-  fileName = appSupportPath + L"\\" + std::wstring(key.begin(), key.end()) +
-             L".secure";
+  mayBeFileName = GetFilePathFromKey(appSupportPath, key);
+  if (!mayBeFileName.has_value()) {
+    result->Error("Write->GetFilePathFromKey, key is too long.");
+    goto cleanup;
+  }
+
+  fileName = mayBeFileName.value();
   while (1) {
     auto ret = MakePath(appSupportPath);
     if (ERROR_SUCCESS != ret) {
@@ -719,7 +833,6 @@ void FlutterSecureStorageWindowsPlugin::Write(
       goto cleanup;
     }
 
-    // TODO: sanitize
     // Open file handle with CREATE_ALWAYS, which ensures file is truncated when
     // it exists.
     fileHandle = CreateFileW(fileName.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
@@ -817,6 +930,7 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
         plaintext = NULL;
   DWORD plaintextSize = 0, bytesWritten = 0, ciphertextSize = 0;
   std::wstring appSupportPath;
+  std::optional<std::wstring> mayBeFileName;
   std::wstring fileName;
   HANDLE fileHandle = INVALID_HANDLE_VALUE;
   FILE_STANDARD_INFO fileInfo = {};
@@ -841,27 +955,57 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
     HandleWin32Error(L"Read->MakePath(appSupportPath)", ret, result);
     goto cleanup;
   }
-  // TODO: sanitize
-  fileName = appSupportPath + L"\\" + std::wstring(key.begin(), key.end()) +
-             L".secure";
-  // Read full file into a buffer
-  fileHandle = CreateFileW(fileName.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+  mayBeFileName = GetFilePathFromKey(appSupportPath, key);
+  if (!mayBeFileName.has_value()) {
+    // Key is too long, so there should not be any matching keys, go backword
+    // compatibility mode.
+    std::cerr << "Read->GetFilePathFromKey, key is too long." << std::endl;
+  } else {
+    fileName = mayBeFileName.value();
+    // Read full file into a buffer
+    fileHandle = CreateFileW(fileName.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                             NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (INVALID_HANDLE_VALUE == fileHandle) {
+      auto error = GetLastError();
+      switch (error) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+          // File or directory does not exist, so let's go to backword
+          // compatibility mode.
+          break;
+        default:
+          // Unexpected error.
+          HandleWin32Error(L"Read->CreateFileW", error, result);
+          goto cleanup;
+      }
+    }
+  }
+
   if (INVALID_HANDLE_VALUE == fileHandle) {
-    auto error = GetLastError();
-    switch (error) {
-      case ERROR_FILE_NOT_FOUND:
-      case ERROR_PATH_NOT_FOUND:
-        // File or directory does not exist, so let's go to backword
-        // compatibility mode.
-        break;
-      default:
-        // Unexpected error.
-        HandleWin32Error(L"Read->CreateFileW", error, result);
-        goto cleanup;
+    // Backwards comp 1.
+    auto backwardCompatibleFileName = appSupportPath + L"\\" +
+                                      std::wstring(key.begin(), key.end()) +
+                                      L".secure";
+    fileHandle = CreateFileW(backwardCompatibleFileName.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    if (INVALID_HANDLE_VALUE == fileHandle) {
+      auto error = GetLastError();
+      switch (error) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+          // File or directory does not exist, so let's go to backword
+          // compatibility mode.
+          break;
+        default:
+          // Unexpected error.
+          HandleWin32Error(L"Read->CreateFileW", error, result);
+          goto cleanup;
+      }
     }
 
-    // Backwards comp.
+    // Backwards comp 2.
     PCREDENTIALW pcred;
     // Key will be converted to wchar internally.
     CA2W target_name(key.c_str());
@@ -871,7 +1015,7 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
       CredFree(pcred);
       returnVal = val;
     } else {
-      error = GetLastError();
+      auto error = GetLastError();
       if (error != ERROR_NOT_FOUND) {
         HandleWin32Error(L"Read->CredReadW", error, result);
       }
@@ -1135,19 +1279,38 @@ void FlutterSecureStorageWindowsPlugin::Delete(
   if (!GetApplicationSupportPath(appSupportPath, result)) {
     return;
   }
-  auto wstr = std::wstring(key.begin(), key.end());
-  BOOL ok = DeleteFileW((appSupportPath + L"\\" + wstr + L".secure").c_str());
-  if (!ok) {
+
+  auto mayBeFileName = GetFilePathFromKey(appSupportPath, key);
+  if (!mayBeFileName.has_value()) {
+    // Key is too long, so there should not be any matching keys, go backward
+    // compatible mode.
+    std::cerr << "Delete->GetFilePathFromKey, key is too long." << std::endl;
+  } else {
+    auto fileName = mayBeFileName.value();
+    if (!DeleteFileW(fileName.c_str())) {
+      auto error = GetLastError();
+      if (ERROR_FILE_NOT_FOUND != error) {
+        HandleWin32Error(L"Delete->DeleteFileW(1)", error, result);
+        return;
+      }
+    }
+  }
+
+  // Backwards comp 1.
+  auto backwardCompatibleFileName = appSupportPath + L"\\" +
+                                    std::wstring(key.begin(), key.end()) +
+                                    L".secure";
+  if (!DeleteFileW(backwardCompatibleFileName.c_str())) {
     auto error = GetLastError();
     if (ERROR_FILE_NOT_FOUND != error) {
-      HandleWin32Error(L"Delete->DeleteFileW", error, result);
+      HandleWin32Error(L"Delete->DeleteFileW(2)", error, result);
       return;
     }
   }
 
-  // Backwards comp.
-  ok = CredDeleteW(wstr.c_str(), CRED_TYPE_GENERIC, 0);
-  if (!ok) {
+  // Backwards comp 2.
+  if (!CredDeleteW(std::wstring(key.begin(), key.end()).c_str(),
+                   CRED_TYPE_GENERIC, 0)) {
     auto error = GetLastError();
 
     // Silently ignore if we try to delete a key that doesn't exist
@@ -1254,10 +1417,18 @@ void FlutterSecureStorageWindowsPlugin::ContainsKey(
     return;
   }
 
-  // TODO: sanitize
-  std::wstring wstr = std::wstring(key.begin(), key.end());
-  auto attribute =
-      GetFileAttributesW((appSupportPath + L"\\" + wstr + L".secure").c_str());
+  auto attribute = INVALID_FILE_ATTRIBUTES;
+  auto mayBeFileName = GetFilePathFromKey(appSupportPath, key);
+  if (!mayBeFileName.has_value()) {
+    // Key is too long, so there should not be any matching keys, go backward
+    // compatible mode.
+    std::cerr << "ContainsKey->GetFilePathFromKey, key is too long."
+              << std::endl;
+  } else {
+    auto fileName = mayBeFileName.value();
+    attribute = GetFileAttributesW(fileName.c_str());
+  }
+
   if (INVALID_FILE_ATTRIBUTES == attribute) {
     // Backwards comp.
     PCREDENTIALW pcred;
