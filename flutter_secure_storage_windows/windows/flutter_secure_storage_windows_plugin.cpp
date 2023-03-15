@@ -947,20 +947,14 @@ void FlutterSecureStorageWindowsPlugin::ReadAll(
     std::wstring fileName(searchRes.cFileName);
     size_t pos = fileName.find(L".secure");
     fileName.erase(pos, 7);
-    // Return value should be UTF-8, which uses 3byte for from U+3000 to U+FFFF
-    // except supprogate chars. First, gets a UTF-8 length
-    auto fileNameW = fileName.c_str();
-    auto outLength =
-        WideCharToMultiByte(CP_UTF8, 0, fileNameW, -1, NULL, 0, NULL, NULL);
-    // TODO: fix memory leak
-    char* out = new char[outLength];
-    // Conversion
-    WideCharToMultiByte(CP_UTF8, 0, fileNameW, -1, out, outLength, NULL, NULL);
+    std::string out = this->ConvertToUtf8(fileName);
     std::optional<std::string> val = this->Read(out, result);
+
     if (!val.has_value()) {
       // failure
       goto cleanup;
     }
+
     auto key = this->RemoveKeyPrefix(out);
     if (val.has_value()) {
       creds[key] = val.value();
