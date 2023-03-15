@@ -40,74 +40,207 @@ class FlutterSecureStorageWindowsPlugin : public flutter::Plugin {
   virtual ~FlutterSecureStorageWindowsPlugin();
 
  private:
-  // Called when a method is called on this plugin's channel from Dart.
+  /// <summary>
+  /// Called when a method is called on this plugin's channel from Dart.
+  /// </summary>
+  /// <param name="method_call"><see cref="flutter::MethodCall" /> to contains
+  /// method call information and its arguments.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result.</param>
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-  // Retrieves the value passed to the given param.
+  /// <summary>
+  /// Retrieves the value passed to the given param.
+  /// </summary>
+  /// <param name="param">A name of the parameter.</param>
+  /// <param name="args">Arguments gotten from <see cref="flutter::MethodCall"
+  /// />.</param> <returns> <see cref="std::optional" />, which stores the
+  /// argument value when <paramref name="args" /> contains an entry with
+  /// <paramref name="param"/>; otherwise, <see cref="std::nullopt" />.
+  /// </returns>
   std::optional<std::string> GetStringArg(const std::string& param,
                                           const flutter::EncodableMap* args);
 
-  // Derive the key for a value given a method argument map.
+  /// <summary>
+  /// Derives the key for a value given a method argument map.
+  /// </summary>
+  /// <param name="args">Arguments gotten from <see cref="flutter::MethodCall"
+  /// />.</param>
+  /// <returns> <see cref="std::optional" />, which stores the
+  /// derived key for a value <paramref name="args" /> contains an entry with
+  /// <paramref name="param"/>; otherwise, <see cref="std::nullopt" />.
+  /// </returns>
   std::optional<std::string> FlutterSecureStorageWindowsPlugin::GetValueKey(
       const flutter::EncodableMap* args);
 
-  // Removes prefix of the given storage key.
-  //
-  // The prefix (defined by ELEMENT_PREFERENCES_KEY_PREFIX) is added
-  // automatically when writing to storage, to distinguish values that are
-  // written by this plugin from values that are not.
+  /// <summary>
+  /// <para>Removes prefix of the given storage key.</para>
+  /// <para>The prefix (defined by <c>ELEMENT_PREFERENCES_KEY_PREFIX</c>) is
+  /// added automatically when writing to storage, to distinguish values that
+  /// are written by this plugin from values that are not.</para>
+  /// </summary>
+  /// <param name="key">An original stored key with prefix.</param>
+  /// <returns>A key without prefix.</returns>
   std::string RemoveKeyPrefix(const std::string& key);
 
-  // Handles Win32 error. When this method completes, result->Error() is called.
+  /// <summary>
+  /// Handles Win32 error. When this method completes, <c>result->Error</c> is
+  /// called.
+  /// </summary>
+  /// <param name="operation">A name of operation. Generally,
+  /// "CALLER_METHOD->TARGET_FUNCTION" format.</param>
+  /// <param name="error">A Win32 error code.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/>
+  /// of <see cref="flutter::MethodResult" /> to store method invocation
+  /// result.</param>
   void FlutterSecureStorageWindowsPlugin::HandleWin32Error(
       const WCHAR* operation, const DWORD error,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
-  // Handles NTSTATUS error. When this method completes, result->Error() is
-  // called.
+  /// <summary>
+  /// Handles NTSTATUS error. When this method completes, <c>result->Error</c>
+  /// is called.
+  /// </summary>
+  /// <param name="operation">A name of operation. Generally,
+  /// "CALLER_METHOD->TARGET_FUNCTION" format.</param>
+  /// <param name="error">A NTSTATUS error code.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/>
+  /// of <see cref="flutter::MethodResult" /> to store method invocation
+  /// result.</param>
   void FlutterSecureStorageWindowsPlugin::HandleNTStatus(
       const WCHAR* operation, const NTSTATUS error,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Converts specified UTF-16 based string (<see cref="std::wstring" />) to
+  /// UTF-8 based string (<see cref="std::string" />).
+  /// </summary>
+  /// <param name="utf16">A<see cref="std::wstring" />.</param>
+  /// <returns>A <see cref="std::string" /> which contains UTF-8 encoded
+  /// string.</returns>
   std::string FlutterSecureStorageWindowsPlugin::ConvertToUtf8(
       std::wstring utf16);
 
   /// <summary>
+  /// Gets an appliction support path to store encrypted data.
+  /// </summary>
+  /// <param name="path">When success, a path will be stored.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/>
+  /// of <see cref="flutter::MethodResult" /> to store method invocation
+  /// result. When returns <c>false</c>, <c>result->Error</c> will be
+  /// called.</param>
+  /// <returns><c>true</c>, when the path exists; <c>false</c>, otherwise.
+  /// Note that the path will be deleted until you get a file handle for the
+  /// path or descendant file system entries.
+  /// </returns>
   bool GetApplicationSupportPath(
       std::wstring& path,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Sanitizes directory path.
+  /// </summary>
+  /// <param name="string">An original path.</param>
+  /// <returns>A sanitized path.</returns>
   std::wstring SanitizeDirString(std::wstring string);
 
+  /// <summary>
+  /// Makes specified directory.
+  /// </summary>
+  /// <param name="path">A path of directory.</param>
+  /// <returns>Win32 error code. <see cref="ERROR_SUCCESS" /> indicates
+  /// success.</returns>
   DWORD MakePath(const std::wstring& path);
 
+  /// <summary>
+  /// Gets a new encryption key for current user.
+  /// </summary>
+  /// <param name="result"><see cref="std::unique_ptr"/>
+  /// of <see cref="flutter::MethodResult" /> to store method invocation
+  /// result. When returns <c>NULL</c>, <c>result->Error</c> will be
+  /// called.</param>
+  /// <returns>A pointer to the key. This value must be freed with <see
+  /// cref="HeapFree" /> function. <c>NULL</c> when fails.</returns>
   PBYTE GetEncryptionKey(
       HANDLE heapHandle,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
-  // Stores the given value under the given key.
+  /// <summary>
+  /// Stores the given value under the given key.
+  /// </summary>
+  /// <param name="key">A key.</param>
+  /// <param name="val">A value, which is encoded with UTF-8 according to
+  /// <c>StandardMessageCodec</c>.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns, <c>result->Success</c> or <c>result->Error</c> will be
+  /// called.</param>
   void Write(
       const std::string& key, const std::string& val,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
-  // Read value and return it. Note that this method does not call
-  // MethodResult->Success().
+  /// <summary>
+  /// Read value and return it. <strong>Note that this method does not call
+  /// MethodResult->Success().</strong>
+  /// </summary>
+  /// <param name="key"> A key to read.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns <see cref="std::nullopt" />, <c>result->Error</c> will be
+  /// called.</param>
+  /// <returns> <see cref="std::optional" />, which stores the
+  /// read value for <paramref name="key" />; otherwise, <see
+  /// cref="std::nullopt" />.
+  /// </returns>
   std::optional<std::string> Read(
       const std::string& key,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Reads all stored key-values pairs.
+  /// </summary>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns, <c>result->Success</c> or <c>result->Error</c> will be
+  /// called.</param>
   void ReadAll(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Deletes the given key value pair.
+  /// </summary>
+  /// <param name="key">A key.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns, <c>result->Success</c> or <c>result->Error</c> will be
+  /// called.</param>
   void Delete(
       const std::string& key,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Deletes all stored key-value pairs.
+  /// </summary>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns, <c>result->Success</c> or <c>result->Error</c> will be
+  /// called.</param>
   void DeleteAll(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
 
+  /// <summary>
+  /// Returns the value whether the given key and correponding value is stored
+  /// or not.
+  /// </summary>
+  /// <param name="key">A key.</param>
+  /// <param name="result"><see cref="std::unique_ptr"/> of <see
+  /// cref="flutter::MethodResult" /> to store method invocation result. When
+  /// returns, <c>result->Success</c> or <c>result->Error</c> will be
+  /// called. If the entry exists, <c>true</c> will be stored. If the entry does
+  /// not exist, <c>false</> will be stored. Otherwise, that is any error was
+  /// occurred, the error will be stored with <c>result->Error()</c>.</param>
   void ContainsKey(
       const std::string& key,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result);
