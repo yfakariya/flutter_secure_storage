@@ -1279,7 +1279,11 @@ void FlutterSecureStorageWindowsPlugin::ContainsKey(
     return;
   }
 
-  // TODO: directory, reparse_point handling
+  if ((attribute & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    result->Error("ContainsKey: file is directory.");
+    return;
+  }
+
   result->Success(flutter::EncodableValue(true));
   return;
 }
