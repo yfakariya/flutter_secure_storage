@@ -353,8 +353,7 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>& result) {
   std::wstring companyName;
   std::wstring productName;
-  // TODO: use WCHAR
-  TCHAR nameBuffer[MAX_PATH + 1]{};
+  WCHAR nameBuffer[MAX_PATH + 1]{};
   char* infoBuffer;
   DWORD versionInfoSize;
   DWORD resVal;
@@ -371,14 +370,14 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
     return false;
   }
 
-  resVal = GetModuleFileName(NULL, nameBuffer, MAX_PATH);
+  resVal = GetModuleFileNameW(NULL, nameBuffer, MAX_PATH);
   if (resVal == 0) {
     HandleWin32Error(L"GetApplicationSupportPath->GetModuleFileName",
                      GetLastError(), result);
     return false;
   }
 
-  versionInfoSize = GetFileVersionInfoSize(nameBuffer, NULL);
+  versionInfoSize = GetFileVersionInfoSizeW(nameBuffer, NULL);
   if (versionInfoSize != 0) {
     infoBuffer = (char*)calloc(versionInfoSize, sizeof(char));
     if (NULL == infoBuffer) {
@@ -386,19 +385,19 @@ bool FlutterSecureStorageWindowsPlugin::GetApplicationSupportPath(
                        result);
       return false;
     }
-    if (GetFileVersionInfo(nameBuffer, 0, versionInfoSize, infoBuffer) == 0) {
+    if (GetFileVersionInfoW(nameBuffer, 0, versionInfoSize, infoBuffer) == 0) {
       free(infoBuffer);
       infoBuffer = NULL;
     } else {
-      if (VerQueryValue(infoBuffer,
-                        TEXT("\\StringFileInfo\\040904e4\\CompanyName"),
-                        &queryVal, &queryLen) != 0) {
-        companyName = SanitizeDirString(std::wstring((const TCHAR*)queryVal));
+      if (0 != VerQueryValueW(infoBuffer,
+                              TEXT("\\StringFileInfo\\040904e4\\CompanyName"),
+                              &queryVal, &queryLen)) {
+        companyName = SanitizeDirString(std::wstring((const WCHAR*)queryVal));
       }
-      if (VerQueryValue(infoBuffer,
-                        TEXT("\\StringFileInfo\\040904e4\\ProductName"),
-                        &queryVal, &queryLen) != 0) {
-        productName = SanitizeDirString(std::wstring((const TCHAR*)queryVal));
+      if (0 != VerQueryValueW(infoBuffer,
+                              TEXT("\\StringFileInfo\\040904e4\\ProductName"),
+                              &queryVal, &queryLen)) {
+        productName = SanitizeDirString(std::wstring((const WCHAR*)queryVal));
       }
     }
     stream << appdataPath << "\\" << companyName << "\\" << productName;
@@ -781,7 +780,7 @@ std::optional<std::string> FlutterSecureStorageWindowsPlugin::Read(
   if (!fs.good()) {
     // Backwards comp.
     PCREDENTIALW pcred;
-    // TODO: non-ascii handling
+    // Key will be converted to wchar internally.
     CA2W target_name(key.c_str());
     bool ok = CredReadW(target_name.m_psz, CRED_TYPE_GENERIC, 0, &pcred);
     if (ok) {
@@ -948,11 +947,15 @@ void FlutterSecureStorageWindowsPlugin::ReadAll(
     std::wstring fileName(searchRes.cFileName);
     size_t pos = fileName.find(L".secure");
     fileName.erase(pos, 7);
-    // TODO: non-ascii handling
-    char* out = new char[fileName.length() + 1];
-    size_t charsConverted = 0;
-    wcstombs_s(&charsConverted, out, fileName.length() + 1, fileName.c_str(),
-               fileName.length() + 1);
+    // Return value should be UTF-8, which uses 3byte for from U+3000 to U+FFFF
+    // except supprogate chars. First, gets a UTF-8 length
+    auto fileNameW = fileName.c_str();
+    auto outLength =
+        WideCharToMultiByte(CP_UTF8, 0, fileNameW, -1, NULL, 0, NULL, NULL);
+    // TODO: fix memory leak
+    char* out = new char[outLength];
+    // Conversion
+    WideCharToMultiByte(CP_UTF8, 0, fileNameW, -1, out, outLength, NULL, NULL);
     std::optional<std::string> val = this->Read(out, result);
     if (!val.has_value()) {
       // failure
@@ -987,7 +990,6 @@ void FlutterSecureStorageWindowsPlugin::ReadAll(
   } else {
     for (DWORD i = 0; i < cred_count; i++) {
       auto pcred = pcreds[i];
-      // TODO: non ascii handling
       std::string target_name = CW2A(pcred->TargetName);
       auto val = std::string((char*)pcred->CredentialBlob);
       auto key = this->RemoveKeyPrefix(target_name);
